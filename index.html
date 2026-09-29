@@ -464,6 +464,23 @@ table.sgrid th.w-qty,table.sgrid td.w-qty{width:1px}
 tr.dup-row > td.fz1{box-shadow:inset 3px 0 0 var(--bad)}
 tr.dup-row input.sty{color:var(--bad);border-color:rgba(180,69,47,.45)}
 .dup-tag{font-size:10px;font-weight:700;color:var(--bad);white-space:normal;line-height:1.25;margin-top:3px;max-width:120px}
+
+/* v28: benchmark folders, confirm dialog, request all */
+.btn.danger{color:#fff;background:linear-gradient(135deg,#d0634c,#b4452f);border:1px solid var(--edge)}
+.att-row.bench{align-items:flex-start;flex-wrap:wrap}
+.bench-wrap{display:flex;flex-wrap:wrap;align-items:center;gap:7px}
+.b-tile{display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:11px;border:1px solid var(--edge);background:rgba(255,255,255,.75);cursor:pointer;font-size:12px;transition:background .13s,box-shadow .13s}
+.b-tile:hover{background:#fff}
+.b-tile.open{box-shadow:0 0 0 3px var(--ring);background:#fff}
+.b-tile.over{background:rgba(47,155,214,.14);box-shadow:0 0 0 2px var(--accentink)}
+.b-ic{font-size:13px}
+.b-nm{font-weight:600;color:var(--ink)}
+.b-ct{font-size:10.5px;font-weight:700;color:var(--accentink);background:rgba(47,155,214,.12);border-radius:999px;padding:0 7px}
+.b-new{max-width:150px}
+.b-link{font-size:11.5px;font-weight:600;color:var(--accentink);text-decoration:none;margin-left:4px}
+.b-link:hover{text-decoration:underline}
+.b-strip{flex-basis:100%;display:flex;flex-wrap:wrap;align-items:center;gap:7px;padding:6px 0 2px 132px}
+.fx-bar{display:flex;gap:8px;margin-bottom:6px}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}#flow{display:none}}
 </style>
 </head>
@@ -518,6 +535,16 @@ tr.dup-row input.sty{color:var(--bad);border-color:rgba(180,69,47,.45)}
     </div>
   </div>
 </dialog>
+<dialog id="cfmDlg">
+  <div class="dlg-bd">
+    <div style="font-weight:700;font-size:15px" id="cfmMsg"></div>
+    <div class="hint" id="cfmDetail"></div>
+    <div class="dlg-ft">
+      <button class="btn" id="cfmCancel">Cancel</button>
+      <button class="btn danger" id="cfmOk">Delete</button>
+    </div>
+  </div>
+</dialog>
 <dialog id="impDlg">
   <div class="dlg-bd">
     <div style="font-weight:700;font-size:15px">Import quote or comparison sheet</div>
@@ -558,6 +585,7 @@ tr.dup-row input.sty{color:var(--bad);border-color:rgba(180,69,47,.45)}
 <input type="file" id="filePick" multiple style="display:none">
 <input type="file" id="imgPick" accept="image/*" style="display:none">
 <input type="file" id="sheetImgPick" accept="image/*" multiple style="display:none">
+<input type="file" id="benchPick" accept="image/*" multiple style="display:none">
 <dialog id="lbDlg" class="lb" onclick="this.close()"><img id="lbImg" alt=""><div class="lb-cap" id="lbCap"></div></dialog>
 <input type="file" id="xlsPick" accept=".xlsx,.xls,.xlsm" multiple style="display:none">
 
@@ -585,7 +613,8 @@ const CFG = {
 
   attachLibrary : "Quote Sheet Files",
   imgDrive      : "Documents",                       // same store Quote Tracker uses
-  imgPath       : "Quote Sheets/Quote Images"        // /thumb + /full inside
+  imgPath       : "Quote Sheets/Quote Images",       // /thumb + /full inside
+  quotesRoot    : "Quote Sheets/_New Quotes"          // <Month YY> New Quotes/Benchmark for <sheet>/<family>/
 };
 const keyOf = s => String(s || "").toUpperCase().replace(/[^A-Z0-9_-]/g, "");
 const encPath = p => p.split("/").map(encodeURIComponent).join("/");
@@ -1395,6 +1424,19 @@ function exportSamples(){
     [{ h:"Style #", w:16 }, { h:"Description", w:24 }, { h:"Factory", w:18 }, { h:"Requested", w:12 }, { h:"Tracking #", w:22 }, { h:"Carrier", w:10 }, { h:"Ship date", w:12 }, { h:"Received", w:12 }], rows);
 }
 
+/* Every delete asks first (Saul, 9/29/2026) — routine actions still don't. */
+function confirmAsk(msg, detail, okLabel){
+  return new Promise(res => {
+    const dlg = $("#cfmDlg");
+    $("#cfmMsg").textContent = msg; $("#cfmDetail").textContent = detail || "";
+    $("#cfmOk").textContent = okLabel || "Delete";
+    const done = v => { dlg.close(); $("#cfmOk").onclick = null; $("#cfmCancel").onclick = null; dlg.oncancel = null; res(v); };
+    $("#cfmOk").onclick = () => done(true);
+    $("#cfmCancel").onclick = () => done(false);
+    dlg.oncancel = () => done(false);
+    dlg.showModal();
+  });
+}
 function openImport(){
   $("#impSub").textContent = S.view === "list"
     ? "The sheet number is read from each file name (S26Q07…); a file without one gets the next number. Several files at once is fine."
@@ -1770,7 +1812,7 @@ async function refreshEtag(){
 /* ============================== OPEN ================================ */
 async function openSheet(id){
   await flushSave();
-  S.conflict = false; S.photos.clear(); S.art.clear(); S.filesLoaded = false; S.syncMsg = ""; S.facOpen = new Set(); S.saveErr = "";
+  S.conflict = false; S.photos.clear(); S.art.clear(); S.filesLoaded = false; S.syncMsg = ""; S.facOpen = new Set(); S.saveErr = ""; S.benchOpen = null;
   const d = $("#detail");
   d.innerHTML = "";
   const c = el("div","card"); c.innerHTML = '<div class="inline-load"><div class="spin"></div>Opening quote sheet…</div>';
@@ -1820,6 +1862,7 @@ async function openSheet(id){
   S.view = "detail";
   renderAll();
   loadFiles();
+  loadBenchmark();
   loadPhotos();
 }
 
@@ -2197,7 +2240,10 @@ function statusCard(){
       nt.appendChild(ta); tr.appendChild(nt);
       const xd = el("td"), x = el("button","icon row-x","✕");
       x.title = f.steps.some(Boolean) ? "Remove factory — drops its ticks, prices and samples" : "Remove factory";
-      x.onclick = () => removeFactory(f.id);
+      x.onclick = async () => {
+        if (!await confirmAsk("Remove " + f.name + " from this sheet?", "Its status, prices, MOQs, notes and sample tracking on this sheet are removed. Its ref images stay in Attachments.", "Remove factory")) return;
+        removeFactory(f.id);
+      };
       xd.appendChild(x); tr.appendChild(xd);
       tb.appendChild(tr);
       if (open){
@@ -2231,6 +2277,16 @@ function statusCard(){
 function factoryPanel(g, f){
   const box = el("div","fx");
   if (!g.styles.length){ box.appendChild(el("div","hint","No styles on this sheet yet.")); return box; }
+  const todo = g.styles.filter(st => st.winner !== AWARD_NA && !((st.cells[f.id] || {}).sample || {}).req);
+  const bar0 = el("div","fx-bar");
+  const ra = el("button","btn xs primary","Request all samples" + (todo.length ? " (" + todo.length + ")" : ""));
+  ra.disabled = !todo.length;
+  ra.title = todo.length ? "Request a sample of every style not yet requested from " + f.name + " (N/A styles skipped)" : "Every style already requested";
+  ra.onclick = () => {
+    todo.forEach(st => { const c = st.cells[f.id] || (st.cells[f.id] = blankCell()); c.sample = { req:stampNow(), tracking:"", carrier:"", ship:"", rec:null }; });
+    autoSampleSteps(g, f); touch(); renderAll();
+  };
+  bar0.appendChild(ra); box.appendChild(bar0);
   const t = document.createElement("table"); t.className = "fx-t";
   const th = document.createElement("thead"), hr = document.createElement("tr");
   ["","Style","Price","MOQ","Award","Sample req","Tracking #","Carrier","Received"].forEach(h => hr.appendChild(el("th",null,h)));
@@ -2399,7 +2455,10 @@ function styleCard(){
       });
       const xd = el("td"), x = el("button","icon row-x","✕");
       x.title = "Remove style";
-      x.onclick = () => { g.styles = g.styles.filter(z => z.id !== s.id); touch(); renderAll(); };
+      x.onclick = async () => {
+        if (!await confirmAsk("Delete style " + (s.style || "(blank row)") + "?", "Its prices, MOQs, notes, award and sample tracking on this sheet are removed. Its photos stay in the photo library.", "Delete style")) return;
+        g.styles = g.styles.filter(z => z.id !== s.id); touch(); renderAll();
+      };
       xd.appendChild(x); tr.appendChild(xd);
       tb.appendChild(tr);
     });
@@ -2568,7 +2627,7 @@ function folderPath(){ return "/" + S.cur.id; }
      <Factory> Ref Images/    images a factory sent (from its "pic" column)
      Images/                  anything else image-wise
      (root)                   files — including "Original Import - <workbook>" */
-const IMG_SUB = "Images", REF_SUB = "Reference", REF_TAIL = " Ref Images";
+const IMG_SUB = "Images", REF_SUB = "Reference", REF_TAIL = " Ref Images";   // IMG_SUB kept only as the legacy "Unsorted" source
 const ORIG = "Original Import - ", CMP = "Compare Import - ";
 const facRefFolder = name => String(name || "").replace(/[\\/:*?"<>|#%]+/g, "-").trim() + REF_TAIL;
 const subPath = sub => sub ? "/" + encodeURIComponent(sub) : "";
@@ -2615,7 +2674,7 @@ function imageRow(label, folder, emptyHint, canAdd){
     im.onclick = () => openLbUrl(src, f["@microsoft.graph.downloadUrl"] || f.webUrl, label + " · " + f.name);
     t.appendChild(im);
     const x = el("button","att-x","✕"); x.title = "Delete image";
-    x.onclick = async ev => { ev.stopPropagation(); x.disabled = true; try { await delAttachment(folder, f.name); S.cur.folders[folder] = list.filter(z => z.name !== f.name); renderFiles(); } catch(e){ x.disabled = false; } };
+    x.onclick = async ev => { ev.stopPropagation(); if (!await confirmAsk("Delete " + f.name + "?", "It's removed from SharePoint — recoverable from the site recycle bin for 93 days.")) return; x.disabled = true; try { await delAttachment(folder, f.name); S.cur.folders[folder] = list.filter(z => z.name !== f.name); renderFiles(); } catch(e){ x.disabled = false; } };
     t.appendChild(x); row.appendChild(t);
   });
   if (canAdd){
@@ -2638,7 +2697,8 @@ function renderFiles(){
   const sum = el("button","att-sum" + (S.attOpen ? " open" : ""));
   sum.appendChild(el("span","car","▸"));
   sum.appendChild(el("b",null,"Attachments"));
-  [[cnt(REF_SUB),"reference"],[facImgs,"factory image"],[cnt(IMG_SUB),"image"],[(S.cur.files || []).length,"file"]].forEach(p => {
+  const bn = S.cur.bench && S.cur.bench.status === "ok" ? S.cur.bench.folders.reduce((a,x) => a + x.items.length, 0) + S.cur.bench.loose.length : 0;
+  [[cnt(REF_SUB),"reference"],[facImgs,"factory image"],[bn + cnt(IMG_SUB),"benchmark image"],[(S.cur.files || []).length,"file"]].forEach(p => {
     sum.appendChild(el("span","att-c" + (p[0] ? "" : " zero"), p[0] + " " + p[1] + (p[0] === 1 ? "" : "s")));
   });
   (S.cur.files || []).forEach(f => { const b = importBadge(f.name); if (b) sum.appendChild(el("span","imp-b " + b.cls, b.label)); });
@@ -2650,7 +2710,7 @@ function renderFiles(){
   const order = S.cur.grid.factories.map(f => facRefFolder(f.name));
   facFolders.sort((a,b) => (order.indexOf(a) < 0 ? 99 : order.indexOf(a)) - (order.indexOf(b) < 0 ? 99 : order.indexOf(b)));
   facFolders.forEach(k => box.appendChild(imageRow(k.slice(0, -REF_TAIL.length) + " ref images", k, "", true)));
-  box.appendChild(imageRow("Images", IMG_SUB, "None yet.", true));
+  box.appendChild(benchRow());
   const fr = el("div","att-row"); fr.appendChild(el("span","att-k","Files"));
   if (!(S.cur.files || []).length) fr.appendChild(el("span","hint","None attached."));
   (S.cur.files || []).forEach(f => {
@@ -2661,10 +2721,159 @@ function renderFiles(){
     else a.textContent = f.name;
     n.appendChild(a); n.appendChild(el("span","sz",fmtSize(f.size)));
     const x = el("button","icon","✕"); x.title = "Delete file";
-    x.onclick = async () => { x.disabled = true; try { await delAttachment("", f.name); S.cur.files = S.cur.files.filter(z => z.name !== f.name); renderFiles(); } catch(e){ x.disabled = false; } };
+    x.onclick = async () => { if (!await confirmAsk("Delete " + f.name + "?", "It's removed from SharePoint — recoverable from the site recycle bin for 93 days.")) return; x.disabled = true; try { await delAttachment("", f.name); S.cur.files = S.cur.files.filter(z => z.name !== f.name); renderFiles(); } catch(e){ x.disabled = false; } };
     n.appendChild(x); fr.appendChild(n);
   });
   box.appendChild(fr);
+}
+/* ---------- Benchmark ----------
+   The team keeps benchmark pictures in SharePoint as
+     Shared Documents/Quote Sheets/_New Quotes/<Month YY> New Quotes/Benchmark for <sheet>/<family>/
+   (last year's months live one level down, in a <YYYY> folder). The tool shows
+   those folders in place — adding, dropping and deleting images all act on the
+   same SharePoint folders, so there is only ever one copy. */
+function monthFolderNames(name){
+  const p = parseSheet(name); if (!p || p.month == null) return [];
+  const m = MONTHS[p.month] + " " + String(p.year).slice(2) + " New Quotes";
+  return [CFG.quotesRoot + "/" + m, CFG.quotesRoot + "/" + p.year + "/" + m];
+}
+const famFolderOf = st => famOf(st) || String(st || "").trim().toUpperCase();
+async function loadBenchmark(){
+  const c = S.cur; if (!c || !S.drivePhoto) return;
+  c.bench = { status:"loading", folders:[], loose:[] };
+  const D = "/drives/" + S.drivePhoto;
+  try {
+    let month = null;
+    for (const path of monthFolderNames(c.name)){
+      try { month = await gf(D + "/root:/" + encPath(path)); month.path = path; break; } catch(e){ if (e.status !== 404) throw e; }
+    }
+    if (S.cur !== c) return;
+    if (!month){ c.bench = { status:"nomonth", folders:[], loose:[], monthName:(monthFolderNames(c.name)[0] || "").split("/").pop() }; renderFiles(); return; }
+    const kids = await gAll(D + "/items/" + month.id + "/children?$select=id,name,folder,webUrl&$top=200");
+    const want = new RegExp("^benchmark\\s+for\\s+" + c.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*$", "i");
+    const bf = kids.find(k => k.folder && want.test(k.name));
+    if (!bf){ c.bench = { status:"none", folders:[], loose:[], month:month }; renderFiles(); return; }
+    const inside = await gAll(D + "/items/" + bf.id + "/children?$expand=thumbnails&$top=200");
+    const subs = inside.filter(x => x.folder).sort((a,b) => a.name.localeCompare(b.name, undefined, { numeric:true }));
+    const folders = await Promise.all(subs.map(async sf => {
+      let items = [];
+      try { items = (await gAll(D + "/items/" + sf.id + "/children?$expand=thumbnails&$top=200")).filter(x => x.file); } catch(e){}
+      return { id:sf.id, name:sf.name, webUrl:sf.webUrl, items:items };
+    }));
+    if (S.cur !== c) return;
+    c.bench = { status:"ok", id:bf.id, name:bf.name, webUrl:bf.webUrl, month:month, folders:folders, loose:inside.filter(x => x.file) };
+  } catch(e){ console.warn("Benchmark load failed", e.message); c.bench = { status:"err", folders:[], loose:[], msg:e.message }; }
+  renderFiles();
+}
+async function putToFolder(folderId, name, blob){
+  const D = "/drives/" + S.drivePhoto;
+  if (blob.size <= 4*1024*1024){
+    await gf(D + "/items/" + folderId + ":/" + encodeURIComponent(name) + ":/content", { method:"PUT", headers:{ "Content-Type":"application/octet-stream" }, body:await blob.arrayBuffer() });
+    return;
+  }
+  const sess = await gf(D + "/items/" + folderId + ":/" + encodeURIComponent(name) + ":/createUploadSession", { method:"POST", body:JSON.stringify({ item:{ "@microsoft.graph.conflictBehavior":"rename" } }) });
+  const CH = 327680 * 10;
+  for (let start = 0; start < blob.size; start += CH){
+    const end = Math.min(start + CH, blob.size);
+    const r = await fetch(sess.uploadUrl, { method:"PUT", headers:{ Authorization:"Bearer " + (await getToken()), "Content-Range":"bytes " + start + "-" + (end-1) + "/" + blob.size }, body:await blob.slice(start, end).arrayBuffer() });
+    if (!r.ok && r.status !== 202) throw new Error("Chunk upload failed " + r.status);
+  }
+}
+async function newFolder(parentId, name){
+  return gf("/drives/" + S.drivePhoto + "/items/" + parentId + "/children", { method:"POST",
+    body:JSON.stringify({ name:name, folder:{}, "@microsoft.graph.conflictBehavior":"fail" }) });
+}
+async function benchUpload(folderId, files){
+  const imgs = Array.from(files || []).filter(f => /^image\//.test(f.type || "") || /\.(jpe?g|png|gif|webp|bmp|heic)$/i.test(f.name || ""));
+  if (!imgs.length) return;
+  setSaveState("saving"); const n0 = $("#saveState").lastChild; if (n0) n0.textContent = "Uploading " + imgs.length + " image" + (imgs.length === 1 ? "" : "s") + "…";
+  for (const f of imgs){ try { await putToFolder(folderId, f.name, f); } catch(e){ setSaveState("err","Upload failed — " + (e.message || "")); } }
+  setSaveState("saved");
+  await loadBenchmark();
+}
+let benchTarget = null;
+function benchRow(){
+  const row = el("div","att-row bench"); row.appendChild(el("span","att-k","Benchmark"));
+  const b = S.cur.bench || { status:"loading" };
+  const legacy = (S.cur.folders || {})[IMG_SUB] || [];
+  if (b.status === "loading"){ row.appendChild(el("span","hint","Looking in " + CFG.quotesRoot + "…")); return row; }
+  if (b.status === "err"){ row.appendChild(el("span","hint warn","Couldn't read the benchmark folder — " + (b.msg || ""))); return row; }
+  if (b.status === "nomonth"){
+    row.appendChild(el("span","hint warn","No “" + b.monthName + "” folder in " + CFG.quotesRoot + "."));
+    return row;
+  }
+  if (b.status === "none"){
+    row.appendChild(el("span","hint","No “Benchmark for " + S.cur.name + "” folder in " + b.month.name + " yet."));
+    const mk = el("button","btn xs","Create it");
+    mk.onclick = async () => { mk.disabled = true; try { await newFolder(b.month.id, "Benchmark for " + S.cur.name); } catch(e){ if (e.status !== 409) setSaveState("err","Couldn't create the folder — " + e.message); } await loadBenchmark(); };
+    row.appendChild(mk);
+  }
+  const wrap = el("div","bench-wrap");
+  const tile = (label, count, onOpen, dropId, open) => {
+    const t = el("div","b-tile" + (open ? " open" : ""));
+    t.appendChild(el("span","b-ic","📁")); t.appendChild(el("span","b-nm",label)); t.appendChild(el("span","b-ct",String(count)));
+    t.onclick = onOpen;
+    if (dropId){
+      t.addEventListener("dragover", e => { e.preventDefault(); t.classList.add("over"); });
+      t.addEventListener("dragleave", () => t.classList.remove("over"));
+      t.addEventListener("drop", e => { e.preventDefault(); t.classList.remove("over"); benchUpload(dropId, e.dataTransfer && e.dataTransfer.files); });
+      t.title = "Click to open · drop images here to add them to " + label;
+    }
+    return t;
+  };
+  if (b.status === "ok"){
+    b.folders.forEach(fd => wrap.appendChild(tile(fd.name, fd.items.length, () => { S.benchOpen = S.benchOpen === fd.id ? null : fd.id; renderFiles(); }, fd.id, S.benchOpen === fd.id)));
+    if (b.loose.length) wrap.appendChild(tile("(not in a folder)", b.loose.length, () => { S.benchOpen = S.benchOpen === "_loose" ? null : "_loose"; renderFiles(); }, b.id, S.benchOpen === "_loose"));
+    // + Folder — one per style family on this sheet, named the way the team names them
+    const have = new Set(b.folders.map(x => x.name.toUpperCase()));
+    const fams = [...new Set(S.cur.grid.styles.map(st => famFolderOf(st.style)).filter(Boolean))].filter(x => !have.has(x.toUpperCase()));
+    if (fams.length){
+      const sel = document.createElement("select"); sel.className = "btn xs b-new";
+      sel.appendChild(new Option("+ Folder…",""));
+      fams.forEach(x => sel.appendChild(new Option(x, x)));
+      sel.onchange = async () => { const v = sel.value; sel.value = ""; if (!v) return; try { await newFolder(b.id, v); } catch(e){ if (e.status !== 409) setSaveState("err","Couldn't create the folder — " + e.message); } await loadBenchmark(); };
+      wrap.appendChild(sel);
+    }
+    const op = el("a","b-link","Open in SharePoint ↗"); op.href = b.webUrl || "#"; op.target = "_blank"; op.rel = "noopener";
+    wrap.appendChild(op);
+  }
+  if (legacy.length) wrap.appendChild(tile("Unsorted (older imports)", legacy.length, () => { S.benchOpen = S.benchOpen === "_legacy" ? null : "_legacy"; renderFiles(); }, null, S.benchOpen === "_legacy"));
+  row.appendChild(wrap);
+  // the open folder's pictures
+  let open = null, addTo = null, delFn = null;
+  if (b.status === "ok" && S.benchOpen === "_loose"){ open = b.loose; addTo = b.id; }
+  else if (b.status === "ok"){ const fd = b.folders.find(x => x.id === S.benchOpen); if (fd){ open = fd.items; addTo = fd.id; } }
+  if (S.benchOpen === "_legacy") open = legacy;
+  if (open){
+    const strip = el("div","b-strip");
+    if (!open.length) strip.appendChild(el("span","hint","Empty — drop images on the folder above or use + Add."));
+    open.forEach(f => {
+      const t = el("div","att-img"), th = (f.thumbnails && f.thumbnails[0]) || {};
+      const src = (th.medium || th.small || {}).url || f["@microsoft.graph.downloadUrl"] || "";
+      const im = document.createElement("img"); im.src = src; im.alt = f.name; im.title = f.name + " — click to enlarge";
+      im.onclick = () => openLbUrl(src, f["@microsoft.graph.downloadUrl"] || f.webUrl, "Benchmark · " + f.name);
+      t.appendChild(im);
+      const x = el("button","att-x","✕"); x.title = "Delete image";
+      x.onclick = async ev => {
+        ev.stopPropagation();
+        if (!await confirmAsk("Delete " + f.name + "?", "It's removed from the benchmark folder in SharePoint — recoverable from the site recycle bin for 93 days.")) return;
+        x.disabled = true;
+        try {
+          if (S.benchOpen === "_legacy") await delAttachment(IMG_SUB, f.name);
+          else await gf("/drives/" + S.drivePhoto + "/items/" + f.id, { method:"DELETE" });
+        } catch(e){ x.disabled = false; return; }
+        if (S.benchOpen === "_legacy") await loadFiles(); else await loadBenchmark();
+      };
+      t.appendChild(x); strip.appendChild(t);
+    });
+    if (addTo){
+      const add = el("button","btn xs","+ Add"); add.title = "Add images to this folder";
+      add.onclick = () => { benchTarget = addTo; $("#benchPick").value = ""; $("#benchPick").click(); };
+      strip.appendChild(add);
+    }
+    row.appendChild(strip);
+  }
+  return row;
 }
 async function ensureFolder(sub){
   const mk = async (parentPath, name) => {
@@ -2847,6 +3056,7 @@ document.addEventListener("DOMContentLoaded", () => {
     for (const f of fs){ try { await putAttachment(f.name, f, imgFolderTarget); } catch(err){ setSaveState("err","Image upload failed — " + (err.message || "")); } }
     await loadFiles();
   };
+  $("#benchPick").onchange = e => { if (benchTarget) benchUpload(benchTarget, e.target.files); };
   $("#xlsPick").onchange = e => { const fs = Array.from(e.target.files || []); $("#impDlg").close(); runImports(fs); };
   $("#homeImp").onclick = () => openImport();
   $("#impBrowse").onclick = () => { $("#xlsPick").value = ""; $("#xlsPick").click(); };
